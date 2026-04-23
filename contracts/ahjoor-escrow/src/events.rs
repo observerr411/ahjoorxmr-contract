@@ -255,24 +255,6 @@ pub fn emit_escrow_refunded(e: &Env, escrow_id: u32, buyer: Address, amount: i12
     .publish(e);
 }
 
-/// Event: Protocol fee paid on dispute resolution
-#[contractevent]
-#[derive(Clone, Debug)]
-pub struct ProtocolFeePaid {
-    pub escrow_id: u32,
-    pub fee_amount: i128,
-    pub fee_recipient: Address,
-}
-
-pub fn emit_protocol_fee_paid(e: &Env, escrow_id: u32, fee_amount: i128, fee_recipient: Address) {
-    ProtocolFeePaid {
-        escrow_id,
-        fee_amount,
-        fee_recipient,
-    }
-    .publish(e);
-}
-
 pub fn emit_contract_upgraded(e: &Env, old_version: u32, new_version: u32, by_admin: Address) {
     ContractUpgraded {
         old_version,
@@ -438,6 +420,26 @@ pub fn emit_multi_party_escrow_released(e: &Env, escrow_id: u32, total_amount: i
     MultiPartyEscrowReleased {
         escrow_id,
         total_amount,
+    }
+    .publish(e);
+}
+
+// --- Issue #142: Batch Escrow Creation ---
+
+/// Event: Batch of escrows created
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BatchEscrowCreated {
+    pub count: u32,
+    pub first_escrow_id: u32,
+    pub last_escrow_id: u32,
+}
+
+pub fn emit_batch_escrow_created(e: &Env, count: u32, first_id: u32, last_id: u32) {
+    BatchEscrowCreated {
+        count,
+        first_escrow_id: first_id,
+        last_escrow_id: last_id,
     }
     .publish(e);
 }

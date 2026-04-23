@@ -8,6 +8,7 @@ const INSTANCE_BUMP_AMOUNT: u32 = 120_000;
 const PERSISTENT_LIFETIME_THRESHOLD: u32 = 100_000;
 const PERSISTENT_BUMP_AMOUNT: u32 = 120_000;
 const DEADLINE_EXTENSION_PROPOSAL_WINDOW: u64 = 24 * 60 * 60;
+const MAX_BATCH_ESCROW_SIZE: u32 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[contracttype]
@@ -32,6 +33,18 @@ pub struct Escrow {
     pub token: Address,
     pub status: EscrowStatus,
     pub created_at: u64,
+    pub deadline: u64,
+    pub metadata_hash: Option<BytesN<32>>,
+    pub sellers: Vec<(Address, u32)>, // (address, bps) — multi-party sellers
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowConfig {
+    pub seller: Address,
+    pub arbiter: Address,
+    pub amount: i128,
+    pub token: Address,
     pub deadline: u64,
     pub metadata_hash: Option<BytesN<32>>,
     pub sellers: Vec<(Address, u32)>, // (address, bps) — multi-party sellers
@@ -136,6 +149,33 @@ impl AhjoorEscrowContract {
         Self::require_not_paused(&env);
         buyer.require_auth();
 
+        Self::create_escrow_internal(
+            env,
+            buyer,
+            seller,
+            arbiter,
+            amount,
+            token,
+            deadline,
+            metadata_hash,
+            sellers,
+        )
+    }
+
+    /// Internal: Creates an escrow without requiring auth (caller must have already authorized).
+    /// This allows batch creation to call this function multiple times without auth conflicts.
+    fn create_escrow_internal(
+        env: Env,
+        buyer: Address,
+        seller: Address,
+        arbiter: Address,
+        amount: i128,
+        token: Address,
+        deadline: u64,
+        metadata_hash: Option<BytesN<32>>,
+        sellers: Vec<(Address, u32)>,
+    ) -> u32 {
+
         if amount <= 0 {
             panic!("Escrow amount must be positive");
         }
@@ -237,6 +277,48 @@ impl AhjoorEscrowContract {
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
         escrow_id
+    }
+
+    /// Create multiple escrows in a single batch transaction.
+    /// Cap: maximum 10 escrows per call. Process atomically: fail entire batch if any config invalid.
+    /// Returns Vec of created escrow IDs.
+    pub fn create_escrows_batch(env: Env, buyer: Address, escrow_configs: Vec<EscrowConfig>) -> Vec<u32> {
+        Self::require_not_paused(&env);
+        buyer.require_auth();
+
+        if escrow_configs.is_empty() {
+            panic!("Batch must contain at least 1 escrow");
+        }
+
+        let config_count = escrow_configs.len();
+        if config_count > 10 {
+            panic!("Batch size cannot exceed 10 escrows");
+        }
+
+        let mut escrow_ids = Vec::new(&env);
+        
+        for config in escrow_configs.iter() {
+            let escrow_id = Self::create_escrow_internal(
+                env.clone(),
+                buyer.clone(),
+                config.seller.clone(),
+                config.arbiter.clone(),
+                config.amount,
+                config.token.clone(),
+                config.deadline,
+                config.metadata_hash.clone(),
+                config.sellers.clone(),
+            );
+            escrow_ids.push_back(escrow_id);
+        }
+
+        let count = escrow_ids.len() as u32;
+        let first_id = escrow_ids.get(0).unwrap();
+        let last_id = escrow_ids.get(count - 1).unwrap();
+
+        events::emit_batch_escrow_created(&env, count, first_id, last_id);
+
+        escrow_ids
     }
 
     /// Release escrowed funds to seller. Can be called by buyer or arbiter.

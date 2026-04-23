@@ -625,7 +625,7 @@ fn test_protocol_fee_deducted_on_resolve_to_seller() {
     let deadline = s.env.ledger().timestamp() + 1000;
     let escrow_id =
         s.client
-            .create_escrow(&buyer, &seller, &arbiter, &1000, &s.token_addr, &deadline);
+            .create_escrow(&buyer, &seller, &arbiter, &1000, &s.token_addr, &deadline, &None, &Vec::new(&s.env));
 
     s.client.dispute_escrow(
         &buyer,
@@ -656,7 +656,7 @@ fn test_protocol_fee_deducted_on_resolve_to_buyer() {
     let deadline = s.env.ledger().timestamp() + 1000;
     let escrow_id =
         s.client
-            .create_escrow(&buyer, &seller, &arbiter, &500, &s.token_addr, &deadline);
+            .create_escrow(&buyer, &seller, &arbiter, &500, &s.token_addr, &deadline, &None, &Vec::new(&s.env));
 
     s.client.dispute_escrow(
         &seller,
@@ -687,7 +687,7 @@ fn test_zero_protocol_fee_skips_fee_transfer() {
     let deadline = s.env.ledger().timestamp() + 1000;
     let escrow_id =
         s.client
-            .create_escrow(&buyer, &seller, &arbiter, &250, &s.token_addr, &deadline);
+            .create_escrow(&buyer, &seller, &arbiter, &250, &s.token_addr, &deadline, &None, &Vec::new(&s.env));
 
     s.client.dispute_escrow(
         &buyer,
@@ -745,7 +745,7 @@ fn test_protocol_fee_emits_event() {
     let deadline = s.env.ledger().timestamp() + 1000;
     let escrow_id =
         s.client
-            .create_escrow(&buyer, &seller, &arbiter, &1000, &s.token_addr, &deadline);
+            .create_escrow(&buyer, &seller, &arbiter, &1000, &s.token_addr, &deadline, &None, &Vec::new(&s.env));
 
     s.client.dispute_escrow(
         &buyer,
@@ -1797,4 +1797,186 @@ fn test_create_multi_party_escrow_too_many_sellers_panics() {
         &None,
         &sellers,
     );
+}
+
+// ===========================================================================
+//  Issue #142: Batch Escrow Creation Tests
+// ===========================================================================
+
+#[test]
+fn test_batch_create_max_size() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    s.token_admin_client.mint(&buyer, &50000);
+
+    let mut configs = Vec::new(&s.env);
+    for _i in 0..10 {
+        let seller = Address::generate(&s.env);
+        let deadline = s.env.ledger().timestamp() + 1000;
+        configs.push_back(EscrowConfig {
+            seller,
+            arbiter: arbiter.clone(),
+            amount: 1000,
+            token: s.token_addr.clone(),
+            deadline,
+            metadata_hash: None,
+            sellers: Vec::new(&s.env),
+        });
+    }
+
+    s.env.mock_all_auths();
+    let ids = s.client.create_escrows_batch(&buyer, &configs);
+    
+    assert_eq!(ids.len(), 10);
+    // IDs should be contiguous
+    for i in 0..10 {
+        assert_eq!(ids.get(i as u32).unwrap(), i as u32);
+    }
+}
+
+#[test]
+#[should_panic(expected = "cannot exceed 10")]
+fn test_batch_create_exceeds_cap() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    s.token_admin_client.mint(&buyer, &60000);
+
+    let mut configs = Vec::new(&s.env);
+    for _i in 0..11 {
+        let seller = Address::generate(&s.env);
+        let deadline = s.env.ledger().timestamp() + 1000;
+        configs.push_back(EscrowConfig {
+            seller,
+            arbiter: arbiter.clone(),
+            amount: 1000,
+            token: s.token_addr.clone(),
+            deadline,
+            metadata_hash: None,
+            sellers: Vec::new(&s.env),
+        });
+    }
+
+    s.env.mock_all_auths();
+    s.client.create_escrows_batch(&buyer, &configs);
+}
+
+#[test]
+fn test_batch_create_single_item() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+    let seller = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    s.token_admin_client.mint(&buyer, &1000);
+
+    let mut configs = Vec::new(&s.env);
+    let deadline = s.env.ledger().timestamp() + 1000;
+    configs.push_back(EscrowConfig {
+        seller: seller.clone(),
+        arbiter: arbiter.clone(),
+        amount: 1000,
+        token: s.token_addr.clone(),
+        deadline,
+        metadata_hash: None,
+        sellers: Vec::new(&s.env),
+    });
+
+    s.env.mock_all_auths();
+    let ids = s.client.create_escrows_batch(&buyer, &configs);
+    
+    assert_eq!(ids.len(), 1);
+    assert_eq!(ids.get(0).unwrap(), 0);
+    
+    let escrow = s.client.get_escrow(&0);
+    assert_eq!(escrow.buyer, buyer);
+    assert_eq!(escrow.seller, seller);
+    assert_eq!(escrow.amount, 1000);
+}
+
+#[test]
+#[should_panic(expected = "Escrow amount must be positive")]
+fn test_batch_create_partial_invalid_rejects_whole_batch() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    s.token_admin_client.mint(&buyer, &5000);
+
+    let mut configs = Vec::new(&s.env);
+    
+    // First two valid
+    for _i in 0..2 {
+        let seller = Address::generate(&s.env);
+        let deadline = s.env.ledger().timestamp() + 1000;
+        configs.push_back(EscrowConfig {
+            seller,
+            arbiter: arbiter.clone(),
+            amount: 1000,
+            token: s.token_addr.clone(),
+            deadline,
+            metadata_hash: None,
+            sellers: Vec::new(&s.env),
+        });
+    }
+
+    // Third with invalid amount (zero)
+    let seller = Address::generate(&s.env);
+    let deadline = s.env.ledger().timestamp() + 1000;
+    configs.push_back(EscrowConfig {
+        seller,
+        arbiter: arbiter.clone(),
+        amount: 0,
+        token: s.token_addr.clone(),
+        deadline,
+        metadata_hash: None,
+        sellers: Vec::new(&s.env),
+    });
+
+    s.env.mock_all_auths();
+    s.client.create_escrows_batch(&buyer, &configs);
+}
+
+#[test]
+fn test_batch_create_three_escrows() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    s.token_admin_client.mint(&buyer, &5000);
+
+    let mut configs = Vec::new(&s.env);
+    for i in 0..3 {
+        let seller = Address::generate(&s.env);
+        let deadline = s.env.ledger().timestamp() + 1000;
+        configs.push_back(EscrowConfig {
+            seller,
+            arbiter: arbiter.clone(),
+            amount: 1000 + (i as i128 * 100),
+            token: s.token_addr.clone(),
+            deadline,
+            metadata_hash: None,
+            sellers: Vec::new(&s.env),
+        });
+    }
+
+    s.env.mock_all_auths();
+    let ids = s.client.create_escrows_batch(&buyer, &configs);
+    
+    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.get(0).unwrap(), 0);
+    assert_eq!(ids.get(1).unwrap(), 1);
+    assert_eq!(ids.get(2).unwrap(), 2);
+
+    // Verify total transferred to contract
+    let contract_balance = s.token_client.balance(&s.client.address);
+    assert_eq!(contract_balance, 1000 + 1100 + 1200);
+}
+
+#[test]
+#[should_panic(expected = "must contain at least")]
+fn test_batch_create_empty() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+
+    s.env.mock_all_auths();
+    s.client.create_escrows_batch(&buyer, &Vec::new(&s.env));
 }
