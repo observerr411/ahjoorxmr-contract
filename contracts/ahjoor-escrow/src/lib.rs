@@ -539,6 +539,51 @@ impl AhjoorEscrowContract {
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
+    // --- Issue #143: Buyer Role Transfer ---
+
+    /// Transfer the buyer role in an active escrow to a new buyer.
+    /// Only the current buyer may call this. Transfer is rejected if the escrow is Disputed.
+    pub fn transfer_buyer_role(env: Env, current_buyer: Address, escrow_id: u32, new_buyer: Address) {
+        Self::require_not_paused(&env);
+        current_buyer.require_auth();
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if escrow.buyer != current_buyer {
+            panic!("Only the current buyer can transfer the buyer role");
+        }
+
+        if matches!(escrow.status, EscrowStatus::Disputed | EscrowStatus::PartiallyDisputed) {
+            panic!("Cannot transfer buyer role during a dispute");
+        }
+
+        if !Self::is_open_escrow_status(escrow.status) {
+            panic!("Escrow is no longer active");
+        }
+
+        let old_buyer = escrow.buyer.clone();
+        escrow.buyer = new_buyer.clone();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Escrow(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_buyer_role_transferred(&env, escrow_id, old_buyer, new_buyer);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
     /// Set protocol fee in basis points and fee recipient. Admin only.
     /// Max fee is 200 bps (2%).
     pub fn update_protocol_fee(env: Env, admin: Address, fee_bps: u32, fee_recipient: Address) {

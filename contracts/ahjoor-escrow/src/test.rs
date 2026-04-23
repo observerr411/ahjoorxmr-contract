@@ -625,7 +625,7 @@ fn test_protocol_fee_deducted_on_resolve_to_seller() {
     let deadline = s.env.ledger().timestamp() + 1000;
     let escrow_id =
         s.client
-            .create_escrow(&buyer, &seller, &arbiter, &1000, &s.token_addr, &deadline);
+            .create_escrow(&buyer, &seller, &arbiter, &1000, &s.token_addr, &deadline, &None, &Vec::new(&s.env));
 
     s.client.dispute_escrow(
         &buyer,
@@ -656,7 +656,7 @@ fn test_protocol_fee_deducted_on_resolve_to_buyer() {
     let deadline = s.env.ledger().timestamp() + 1000;
     let escrow_id =
         s.client
-            .create_escrow(&buyer, &seller, &arbiter, &500, &s.token_addr, &deadline);
+            .create_escrow(&buyer, &seller, &arbiter, &500, &s.token_addr, &deadline, &None, &Vec::new(&s.env));
 
     s.client.dispute_escrow(
         &seller,
@@ -687,7 +687,7 @@ fn test_zero_protocol_fee_skips_fee_transfer() {
     let deadline = s.env.ledger().timestamp() + 1000;
     let escrow_id =
         s.client
-            .create_escrow(&buyer, &seller, &arbiter, &250, &s.token_addr, &deadline);
+            .create_escrow(&buyer, &seller, &arbiter, &250, &s.token_addr, &deadline, &None, &Vec::new(&s.env));
 
     s.client.dispute_escrow(
         &buyer,
@@ -745,7 +745,7 @@ fn test_protocol_fee_emits_event() {
     let deadline = s.env.ledger().timestamp() + 1000;
     let escrow_id =
         s.client
-            .create_escrow(&buyer, &seller, &arbiter, &1000, &s.token_addr, &deadline);
+            .create_escrow(&buyer, &seller, &arbiter, &1000, &s.token_addr, &deadline, &None, &Vec::new(&s.env));
 
     s.client.dispute_escrow(
         &buyer,
@@ -1797,4 +1797,154 @@ fn test_create_multi_party_escrow_too_many_sellers_panics() {
         &None,
         &sellers,
     );
+}
+
+// ===========================================================================
+//  Issue #143: Buyer Role Transfer Tests
+// ===========================================================================
+
+#[test]
+fn test_transfer_buyer_role_success() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+    let new_buyer = Address::generate(&s.env);
+    let seller = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    let deadline = s.env.ledger().timestamp() + 1000;
+
+    s.env.mock_all_auths();
+    s.token_admin_client.mint(&buyer, &1000);
+
+    let escrow_id = s.client.create_escrow(
+        &buyer,
+        &seller,
+        &arbiter,
+        &1000,
+        &s.token_addr,
+        &deadline,
+        &None,
+        &Vec::new(&s.env),
+    );
+
+    s.client.transfer_buyer_role(&buyer, &escrow_id, &new_buyer);
+
+    let escrow = s.client.get_escrow(&escrow_id);
+    assert_eq!(escrow.buyer, new_buyer);
+}
+
+#[test]
+#[should_panic(expected = "Cannot transfer buyer role during a dispute")]
+fn test_transfer_buyer_role_during_dispute_rejected() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+    let new_buyer = Address::generate(&s.env);
+    let seller = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    let deadline = s.env.ledger().timestamp() + 1000;
+
+    s.env.mock_all_auths();
+    s.token_admin_client.mint(&buyer, &1000);
+
+    let escrow_id = s.client.create_escrow(
+        &buyer,
+        &seller,
+        &arbiter,
+        &1000,
+        &s.token_addr,
+        &deadline,
+        &None,
+        &Vec::new(&s.env),
+    );
+
+    s.client.dispute_escrow(&buyer, &escrow_id, &soroban_sdk::String::from_str(&s.env, "dispute"), &1000);
+    s.client.transfer_buyer_role(&buyer, &escrow_id, &new_buyer);
+}
+
+#[test]
+fn test_new_buyer_inherits_release_rights() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+    let new_buyer = Address::generate(&s.env);
+    let seller = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    let deadline = s.env.ledger().timestamp() + 1000;
+
+    s.env.mock_all_auths();
+    s.token_admin_client.mint(&buyer, &1000);
+
+    let escrow_id = s.client.create_escrow(
+        &buyer,
+        &seller,
+        &arbiter,
+        &1000,
+        &s.token_addr,
+        &deadline,
+        &None,
+        &Vec::new(&s.env),
+    );
+
+    s.client.transfer_buyer_role(&buyer, &escrow_id, &new_buyer);
+
+    // new_buyer should be able to release
+    s.client.release_escrow(&new_buyer, &escrow_id);
+    assert_eq!(s.token_client.balance(&seller), 1000);
+}
+
+#[test]
+#[should_panic(expected = "Only buyer or arbiter can release escrow")]
+fn test_old_buyer_loses_release_rights_after_transfer() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+    let new_buyer = Address::generate(&s.env);
+    let seller = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    let deadline = s.env.ledger().timestamp() + 1000;
+
+    s.env.mock_all_auths();
+    s.token_admin_client.mint(&buyer, &1000);
+
+    let escrow_id = s.client.create_escrow(
+        &buyer,
+        &seller,
+        &arbiter,
+        &1000,
+        &s.token_addr,
+        &deadline,
+        &None,
+        &Vec::new(&s.env),
+    );
+
+    s.client.transfer_buyer_role(&buyer, &escrow_id, &new_buyer);
+
+    // old buyer should no longer be able to release
+    s.client.release_escrow(&buyer, &escrow_id);
+}
+
+#[test]
+#[should_panic(expected = "Only the current buyer can transfer")]
+fn test_non_buyer_cannot_transfer_buyer_role() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+    let new_buyer = Address::generate(&s.env);
+    let outsider = Address::generate(&s.env);
+    let seller = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    let deadline = s.env.ledger().timestamp() + 1000;
+
+    s.env.mock_all_auths();
+    s.token_admin_client.mint(&buyer, &1000);
+
+    let escrow_id = s.client.create_escrow(
+        &buyer,
+        &seller,
+        &arbiter,
+        &1000,
+        &s.token_addr,
+        &deadline,
+        &None,
+        &Vec::new(&s.env),
+    );
+
+    // outsider can't transfer the buyer role
+    s.client.transfer_buyer_role(&outsider, &escrow_id, &new_buyer);
 }
